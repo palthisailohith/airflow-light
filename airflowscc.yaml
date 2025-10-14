@@ -3,20 +3,7 @@ kind: Namespace
 metadata:
   name: airflow
 ---
-# Postgres Persistent Volume
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-pvc
-  namespace: airflow
-spec:
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: fast-storage   # your StorageClass
-  resources:
-    requests:
-      storage: 100Mi
----
-# Airflow DAGs and Logs PVCs
+# PVCs for DAGs and Logs
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -41,55 +28,7 @@ spec:
     requests:
       storage: 50Mi
 ---
-# Postgres Deployment + Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: airflow
-spec:
-  ports:
-    - port: 5432
-  selector:
-    app: postgres
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-  namespace: airflow
-spec:
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      securityContext:
-        fsGroup: 2000
-      containers:
-        - name: postgres
-          image: postgres:15
-          env:
-            - name: POSTGRES_USER
-              value: airflow
-            - name: POSTGRES_PASSWORD
-              value: airflow
-            - name: POSTGRES_DB
-              value: airflow
-          ports:
-            - containerPort: 5432
-          volumeMounts:
-            - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
-      volumes:
-        - name: postgres-storage
-          persistentVolumeClaim:
-            claimName: postgres-pvc
----
-# Airflow Config
+# ✅ Airflow Config (points to existing Postgres)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -117,4 +56,97 @@ spec:
         component: webserver
     spec:
       securityContext:
-        fsGroup: 2
+        fsGroup: 2000
+      containers:
+        - name: webserver
+          image: apache/airflow:2.9.2
+          envFrom:
+            - configMapRef:
+                name: airflow-env
+          ports:
+            - containerPort: 8080
+          command:
+            - bash
+            - -c
+            - |
+              uid=$(id -u)
+              if ! whoami &>/dev/null; then
+                echo "airflow:x:${uid}:0:airflow user:/home/airflow:/bin/bash" >> /etc/passwd
+              fi
+              airflow db migrate || true
+              airflow users create \
+                --username admin --password admin \
+                --firstname admin --lastname user \
+                --role Admin --email admin@example.com || true
+              exec airflow webserver
+          volumeMounts:
+            - name: dags
+              mountPath: /opt/airflow/dags
+            - name: logs
+              mountPath: /opt/airflow/logs
+      volumes:
+        - name: dags
+          persistentVolumeClaim:
+            claimName: airflow-dags-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: airflow-logs-pvc
+---
+# Airflow Scheduler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: airflow
+spec:
+  selector:
+    matchLabels:
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        component: scheduler
+    spec:
+      securityContext:
+        fsGroup: 2000
+      containers:
+        - name: scheduler
+          image: apache/airflow:2.9.2
+          envFrom:
+            - configMapRef:
+                name: airflow-env
+          command:
+            - bash
+            - -c
+            - |
+              uid=$(id -u)
+              if ! whoami &>/dev/null; then
+                echo "airflow:x:${uid}:0:airflow user:/home/airflow:/bin/bash" >> /etc/passwd
+              fi
+              exec airflow scheduler
+          volumeMounts:
+            - name: dags
+              mountPath: /opt/airflow/dags
+            - name: logs
+              mountPath: /opt/airflow/logs
+      volumes:
+        - name: dags
+          persistentVolumeClaim:
+            claimName: airflow-dags-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: airflow-logs-pvc
+---
+# Webserver Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: airflow
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      nodePort: 30808
+  selector:
+    component: webserver
