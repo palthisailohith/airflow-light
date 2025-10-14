@@ -28,7 +28,7 @@ spec:
     requests:
       storage: 50Mi
 ---
-# ✅ Airflow Config (points to existing Postgres)
+# Airflow ConfigMap (uses existing Postgres)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -55,8 +55,6 @@ spec:
       labels:
         component: webserver
     spec:
-      securityContext:
-        fsGroup: 2000
       containers:
         - name: webserver
           image: apache/airflow:2.9.2
@@ -71,7 +69,7 @@ spec:
             - |
               uid=$(id -u)
               if ! whoami &>/dev/null; then
-                echo "airflow:x:${uid}:0:airflow user:/home/airflow:/bin/bash" >> /etc/passwd
+                echo "airflow:x:${uid}:0:airflow:/home/airflow:/bin/bash" >> /etc/passwd
               fi
               airflow db migrate || true
               airflow users create \
@@ -107,8 +105,6 @@ spec:
       labels:
         component: scheduler
     spec:
-      securityContext:
-        fsGroup: 2000
       containers:
         - name: scheduler
           image: apache/airflow:2.9.2
@@ -121,7 +117,7 @@ spec:
             - |
               uid=$(id -u)
               if ! whoami &>/dev/null; then
-                echo "airflow:x:${uid}:0:airflow user:/home/airflow:/bin/bash" >> /etc/passwd
+                echo "airflow:x:${uid}:0:airflow:/home/airflow:/bin/bash" >> /etc/passwd
               fi
               exec airflow scheduler
           volumeMounts:
@@ -137,16 +133,30 @@ spec:
           persistentVolumeClaim:
             claimName: airflow-logs-pvc
 ---
-# Webserver Service
+# Internal Webserver Service
 apiVersion: v1
 kind: Service
 metadata:
   name: airflow-webserver
   namespace: airflow
 spec:
-  type: NodePort
-  ports:
-    - port: 8080
-      nodePort: 30808
   selector:
     component: webserver
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# OpenShift Route (expose UI)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: airflow-ui
+  namespace: airflow
+spec:
+  to:
+    kind: Service
+    name: airflow-webserver
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
