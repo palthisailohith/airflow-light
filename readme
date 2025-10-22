@@ -3,3 +3,8 @@ kubectl patch deployment airflow-webserver -n airflow \
 
 kubectl patch deployment airflow-scheduler -n airflow \
   --type='json' -p='[{"op":"add","path":"/spec/template/spec/securityContext","value":{"runAsUser":50000,"runAsGroup":0,"fsGroup":0}}]'
+
+
+
+docker run --rm python:3.9-slim \
+  python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
